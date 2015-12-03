@@ -1126,25 +1126,6 @@ abstract class TelephonyConnection extends Connection {
     }
 
     /**
-     * Applies the voice privacy capabilities to the {@code CallCapabilities} bit-mask.
-     *
-     * @param callCapabilities The {@code CallCapabilities} bit-mask.
-     * @return The capabilities with the voice privacy capabilities applied.
-     */
-    private int applyVoicePrivacyCapabilities(int callCapabilities) {
-        int currentCapabilities = callCapabilities;
-        if (mIsVoicePrivacyOn) {
-            currentCapabilities = changeCapability(currentCapabilities,
-                    CAPABILITY_VOICE_PRIVACY, mIsVoicePrivacyOn);
-        } else {
-            currentCapabilities = changeCapability(currentCapabilities,
-                    CAPABILITY_VOICE_PRIVACY, mIsVoicePrivacyOn);
-        }
-
-        return currentCapabilities;
-    }
-
-    /**
      * Applies the add participant capabilities to the {@code CallCapabilities} bit-mask.
      *
      * @param callCapabilities The {@code CallCapabilities} bit-mask.
