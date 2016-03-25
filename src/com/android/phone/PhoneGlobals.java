@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2006 The Android Open Source Project
+ * Copyright (C) 2006,2015 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -49,7 +49,10 @@ import android.os.UpdateLock;
 import android.os.UserHandle;
 import android.preference.PreferenceManager;
 import android.provider.Settings.System;
+import android.telecom.PhoneAccountHandle;
+import android.telecom.TelecomManager;
 import android.telephony.CarrierConfigManager;
+import android.telephony.SubscriptionManager;
 import android.telephony.ServiceState;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
@@ -73,6 +76,8 @@ import com.android.server.sip.SipService;
 import com.android.services.telephony.activation.SimActivationManager;
 
 import java.util.ArrayList;
+import java.util.List;
+
 import java.util.List;
 
 /**
@@ -103,6 +108,7 @@ public class PhoneGlobals extends ContextWrapper {
     private static final boolean DBG =
             (PhoneGlobals.DBG_LEVEL >= 1) && (SystemProperties.getInt("ro.debuggable", 0) == 1);
     private static final boolean VDBG = (PhoneGlobals.DBG_LEVEL >= 2);
+    private static final String PROPERTY_AIRPLANE_MODE_ON = "persist.radio.airplane_mode_on";
 
     // Message codes; see mHandler below.
     private static final int EVENT_SIM_NETWORK_LOCKED = 3;
@@ -141,6 +147,9 @@ public class PhoneGlobals extends ContextWrapper {
 
     private static PhoneGlobals sMe;
 
+    private static final String ACTION_MANAGED_ROAMING_IND =
+            "codeaurora.intent.action.ACTION_MANAGED_ROAMING_IND";
+
     // A few important fields we expose to the rest of the package
     // directly (rather than thru set/get methods) for efficiency.
     CallController callController;
@@ -154,6 +163,7 @@ public class PhoneGlobals extends ContextWrapper {
 
     private CallGatewayManager callGatewayManager;
     private CallStateMonitor callStateMonitor;
+    private Phone phoneInEcm;
 
     static boolean sVoiceCapable = true;
 
@@ -243,7 +253,8 @@ public class PhoneGlobals extends ContextWrapper {
                         // Some products don't have the concept of a "SIM network lock"
                         Log.i(LOG_TAG, "Ignoring EVENT_SIM_NETWORK_LOCKED event; "
                               + "not showing 'SIM network unlock' PIN entry screen");
-                    } else {
+                    } else if (getResources()
+                            .getBoolean(R.bool.icc_depersonalizationPanelEnabled)) {
                         // Normal case: show the "SIM network unlock" PIN entry screen.
                         // The user won't be able to do anything else until
                         // they enter a valid SIM network PIN.
@@ -403,6 +414,7 @@ public class PhoneGlobals extends ContextWrapper {
             intentFilter.addAction(TelephonyIntents.ACTION_RADIO_TECHNOLOGY_CHANGED);
             intentFilter.addAction(TelephonyIntents.ACTION_SERVICE_STATE_CHANGED);
             intentFilter.addAction(TelephonyIntents.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED);
+            intentFilter.addAction(ACTION_MANAGED_ROAMING_IND);
             registerReceiver(mReceiver, intentFilter);
 
             //set the default values for the preferences in the phone.
@@ -776,6 +788,14 @@ public class PhoneGlobals extends ContextWrapper {
             if (action.equals(Intent.ACTION_AIRPLANE_MODE_CHANGED)) {
                 boolean enabled = System.getInt(getContentResolver(),
                         System.AIRPLANE_MODE_ON, 0) == 0;
+
+                // Set the airplane mode property for RIL to read on boot up
+                // to know if the phone is in airplane mode so that RIL can
+                // power down the ICC card.
+                Log.d(LOG_TAG, "Setting property " + PROPERTY_AIRPLANE_MODE_ON);
+                // enabled here implies airplane mode is OFF from above condition
+                SystemProperties.set(PROPERTY_AIRPLANE_MODE_ON, (enabled ? "0" : "1"));
+
                 PhoneUtils.setRadioPower(enabled);
             } else if (action.equals(TelephonyIntents.ACTION_ANY_DATA_CONNECTION_STATE_CHANGED)) {
                 int subId = intent.getIntExtra(PhoneConstants.SUBSCRIPTION_KEY,
@@ -824,20 +844,38 @@ public class PhoneGlobals extends ContextWrapper {
             } else if (action.equals(TelephonyIntents.ACTION_SERVICE_STATE_CHANGED)) {
                 handleServiceStateChanged(intent);
             } else if (action.equals(TelephonyIntents.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED)) {
-                if (TelephonyCapabilities.supportsEcm(mCM.getFgPhone())) {
+                int phoneId = intent.getIntExtra(PhoneConstants.PHONE_KEY, 0);
+                phoneInEcm = getPhone(phoneId);
+                Log.d(LOG_TAG, "Emergency Callback Mode. phoneId:" + phoneId);
+                if (TelephonyCapabilities.supportsEcm(phoneInEcm)) {
                     Log.d(LOG_TAG, "Emergency Callback Mode arrived in PhoneApp.");
                     // Start Emergency Callback Mode service
                     if (intent.getBooleanExtra("phoneinECMState", false)) {
                         context.startService(new Intent(context,
                                 EmergencyCallbackModeService.class));
+                    } else {
+                        phoneInEcm = null;
                     }
                 } else {
                     // It doesn't make sense to get ACTION_EMERGENCY_CALLBACK_MODE_CHANGED
                     // on a device that doesn't support ECM in the first place.
                     Log.e(LOG_TAG, "Got ACTION_EMERGENCY_CALLBACK_MODE_CHANGED, "
-                            + "but ECM isn't supported for phone: "
-                            + mCM.getFgPhone().getPhoneName());
+                          + "but ECM isn't supported for phone: " + phoneInEcm.getPhoneName());
+                    phoneInEcm = null;
                 }
+            } else if (action.equals(Intent.ACTION_DOCK_EVENT)) {
+                mDockState = intent.getIntExtra(Intent.EXTRA_DOCK_STATE,
+                        Intent.EXTRA_DOCK_STATE_UNDOCKED);
+                if (VDBG) Log.d(LOG_TAG, "ACTION_DOCK_EVENT -> mDockState = " + mDockState);
+                mHandler.sendMessage(mHandler.obtainMessage(EVENT_DOCK_STATE_CHANGED, 0));
+            } else if (action.equals(ACTION_MANAGED_ROAMING_IND)) {
+                int subscription = intent.getIntExtra(PhoneConstants.SUBSCRIPTION_KEY,
+                        SubscriptionManager.getDefaultSubId());
+                Intent createIntent = new Intent();
+                createIntent.setClass(context, ManagedRoaming.class);
+                createIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                createIntent.putExtra(PhoneConstants.SUBSCRIPTION_KEY, subscription);
+                context.startActivity(createIntent);
             }
         }
     }
@@ -914,6 +952,10 @@ public class PhoneGlobals extends ContextWrapper {
         }
     }
 
+    public Phone getPhoneInEcm() {
+        return phoneInEcm;
+    }
+
     /**
      * Triggers a refresh of the message waiting (voicemail) indicator.
      *
@@ -949,4 +991,19 @@ public class PhoneGlobals extends ContextWrapper {
      * Used to determine if the preserved call origin is fresh enough.
      */
     private static final long CALL_ORIGIN_EXPIRATION_MILLIS = 30 * 1000;
+
+    static PhoneAccountHandle getPhoneAccountHandle(Context context, int phoneId) {
+        if (!SubscriptionManager.isValidPhoneId(phoneId)) {
+            return null;
+        }
+        String subId = String.valueOf(PhoneFactory.getPhone(phoneId).getSubId());
+        TelecomManager telecomManager = TelecomManager.from(context);
+        List<PhoneAccountHandle> accounts = telecomManager.getCallCapablePhoneAccounts();
+        for (PhoneAccountHandle account : accounts) {
+            if (subId.equals(account.getId())) {
+                return account;
+            }
+        }
+        return null;
+    }
 }

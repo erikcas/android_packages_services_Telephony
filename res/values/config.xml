@@ -218,4 +218,27 @@
 
     <!-- Whether the emergency only account can make emergency calls -->
     <bool name="config_pstnCanPlaceEmergencyCalls">true</bool>
+
+    <!-- Show Preferred Network Type options in No SIM case -->
+    <bool name="config_no_sim_display_network_modes">false</bool>
+
+    <!-- To disable/enable CallForwardUnconditional Timer -->
+    <bool name="config_enable_cfu_time">false</bool>
+
+    <!-- Config to enabled reading and displaying of EF_PLMN_SEL SIM file -->
+    <bool name="config_ef_plmn_sel">false</bool>
+
+    <!-- Config to enable/disable showing depersonalizationpanel dialog -->
+	<bool name="icc_depersonalizationPanelEnabled">true</bool>
+
+    <bool name="config_regional_ussd_hide_error_from_network_enable">false</bool>
+
+    <!-- Whether to set voicemail address editable-->
+    <bool name="config_regional_voicemail_address_editable">false</bool>
+
+    <!-- Default value for setting vibrate after call connected -->
+    <integer name="config_default_vibrate_after_connected">1</integer>
+
+    <!-- To  show VMNotification always until user reads it-->
+    <bool name="config_show_vm_notification_always" translatable="false">false</bool>
 </resources>

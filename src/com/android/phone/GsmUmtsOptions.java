@@ -23,13 +23,21 @@ import android.os.PersistableBundle;
 import android.preference.Preference;
 import android.preference.PreferenceActivity;
 import android.preference.PreferenceScreen;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.provider.Settings;
 import android.telephony.CarrierConfigManager;
 import android.content.ComponentName;
+import android.telephony.SubscriptionManager;
 
+import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.PhoneFactory;
+import com.android.internal.telephony.PhoneProxy;
+import com.android.internal.telephony.gsm.GSMPhone;
 
+import java.util.List;
 /**
  * List of Network-specific settings screens.
  */
@@ -46,13 +54,26 @@ public class GsmUmtsOptions {
     private PreferenceActivity mPrefActivity;
     private PreferenceScreen mPrefScreen;
     private int mSubId;
+    private Phone mPhone;
+    boolean mIsPlmnIncSearchEnabled = false;
 
     public GsmUmtsOptions(PreferenceActivity prefActivity, PreferenceScreen prefScreen,
             final int subId) {
         mPrefActivity = prefActivity;
         mPrefScreen = prefScreen;
         mSubId = subId;
+        mPhone = getPhone(subId);
         create();
+    }
+
+    private Phone getPhone(int subId) {
+        int phoneId = SubscriptionManager.getPhoneId(subId);
+        log("getPhone: subId = " + subId + " phoneid = " + phoneId);
+        if (!SubscriptionManager.isValidPhoneId(phoneId)) {
+            phoneId = 0;
+        }
+        PhoneProxy proxyPhone = (PhoneProxy)PhoneFactory.getPhone(phoneId);
+        return proxyPhone.getActivePhone();
     }
 
     protected void create() {
@@ -61,15 +82,17 @@ public class GsmUmtsOptions {
         boolean removedAPNExpand = false;
         mButtonOperatorSelectionExpand =
                 (PreferenceScreen) mPrefScreen.findPreference(BUTTON_OPERATOR_SELECTION_EXPAND_KEY);
-        if (PhoneFactory.getDefaultPhone().getPhoneType() != PhoneConstants.PHONE_TYPE_GSM) {
+        PersistableBundle carrierConfig =
+                PhoneGlobals.getInstance().getCarrierConfigForSubId(mSubId);
+        if (mPhone.getPhoneType() != PhoneConstants.PHONE_TYPE_GSM) {
             log("Not a GSM phone");
             mButtonAPNExpand.setEnabled(false);
-            mButtonOperatorSelectionExpand.setEnabled(false);
+            log("Manual network selection not allowed: Disabling Operator Selection Menu");
+            mPrefScreen.removePreference(mPrefScreen
+                .findPreference(BUTTON_OPERATOR_SELECTION_EXPAND_KEY));
         } else {
             log("Not a CDMA phone");
             Resources res = mPrefActivity.getResources();
-            PersistableBundle carrierConfig =
-                    PhoneGlobals.getInstance().getCarrierConfigForSubId(mSubId);
 
             // Determine which options to display. For GSM these are defaulted to true in
             // CarrierConfigManager, but they maybe overriden by DefaultCarrierConfigService or a
@@ -86,26 +109,34 @@ public class GsmUmtsOptions {
                 mPrefScreen.removePreference(mPrefScreen
                         .findPreference(BUTTON_OPERATOR_SELECTION_EXPAND_KEY));
             }
-
-            if (carrierConfig.getBoolean(CarrierConfigManager.KEY_CSP_ENABLED_BOOL)) {
-                if (PhoneFactory.getDefaultPhone().isCspPlmnEnabled()) {
-                    log("[CSP] Enabling Operator Selection menu.");
-                    mButtonOperatorSelectionExpand.setEnabled(true);
-                } else {
-                    log("[CSP] Disabling Operator Selection menu.");
-                    mPrefScreen.removePreference(mPrefScreen
-                          .findPreference(BUTTON_OPERATOR_SELECTION_EXPAND_KEY));
+            final GSMPhone gsmPhone = (GSMPhone)mPhone;
+            if(!gsmPhone.isManualNetSelAllowed()) {
+                log("Manual network selection not allowed: Disabling Operator Selection menu");
+                mPrefScreen.removePreference(mPrefScreen
+                    .findPreference(BUTTON_OPERATOR_SELECTION_EXPAND_KEY));
+            } else {
+                if (!res.getBoolean(R.bool.config_ef_plmn_sel)) {
+                    mIsPlmnIncSearchEnabled = isPlmnIncSearchEnabled();
+                }
+                if (carrierConfig.getBoolean(CarrierConfigManager.KEY_CSP_ENABLED_BOOL)) {
+                    if (mPhone.isCspPlmnEnabled()) {
+                        log("[CSP] Enabling Operator Selection menu.");
+                        mButtonOperatorSelectionExpand.setEnabled(true);
+                    } else {
+                        log("[CSP] Disabling Operator Selection menu.");
+                        mPrefScreen.removePreference(mPrefScreen
+                            .findPreference(BUTTON_OPERATOR_SELECTION_EXPAND_KEY));
+                    }
                 }
             }
-
-            // Read platform settings for carrier settings
-            final boolean isCarrierSettingsEnabled = carrierConfig.getBoolean(
-                CarrierConfigManager.KEY_CARRIER_SETTINGS_ENABLE_BOOL);
-            if (!isCarrierSettingsEnabled) {
-                Preference pref = mPrefScreen.findPreference(BUTTON_CARRIER_SETTINGS_KEY);
-                if (pref != null) {
-                    mPrefScreen.removePreference(pref);
-                }
+        }
+        // Read platform settings for carrier settings
+        final boolean isCarrierSettingsEnabled = carrierConfig.getBoolean(
+            CarrierConfigManager.KEY_CARRIER_SETTINGS_ENABLE_BOOL);
+        if (!isCarrierSettingsEnabled) {
+            Preference pref = mPrefScreen.findPreference(BUTTON_CARRIER_SETTINGS_KEY);
+            if (pref != null) {
+                mPrefScreen.removePreference(pref);
             }
         }
         if (!removedAPNExpand) {
@@ -130,15 +161,47 @@ public class GsmUmtsOptions {
                     new Preference.OnPreferenceClickListener() {
                         @Override
                         public boolean onPreferenceClick(Preference preference) {
-                            final Intent intent = new Intent(Intent.ACTION_MAIN);
-                            intent.setComponent(new ComponentName("com.android.phone",
-                                    "com.android.phone.NetworkSetting"));
+                            Intent intent;
+                            if (mIsPlmnIncSearchEnabled) {
+                                log("Incremental manual plmn scan enabled");
+                                // prepare intent to start NetworkSettings activity for incr manual
+                                // plmn scan.
+                                intent = new Intent(
+                                        "org.codeaurora.settings.NETWORK_OPERATOR_SETTINGS_ASYNC");
+                            } else {
+                                intent = new Intent(Intent.ACTION_MAIN);
+                                intent.setComponent(new ComponentName("com.android.phone",
+                                       "com.android.phone.NetworkSetting"));
+                            }
                             intent.putExtra(EXTRA_SUB_ID, mSubId);
                             mPrefActivity.startActivity(intent);
                             return true;
                         }
             });
         }
+    }
+
+    /**
+     * check whether NetworkSetting apk exist in system, if yes, return true, else
+     * return false.
+     */
+    private boolean isPlmnIncSearchEnabled() {
+        if (mButtonOperatorSelectionExpand != null) {
+            PackageManager pm = mButtonOperatorSelectionExpand.getContext().getPackageManager();
+
+            // check whether the target handler exist in system
+            Intent intent = new Intent("org.codeaurora.settings.NETWORK_OPERATOR_SETTINGS_ASYNC");
+            List<ResolveInfo> list = pm.queryIntentActivities(intent, 0);
+            for (ResolveInfo resolveInfo : list){
+                // check is it installed in system.img, exclude the application
+                // installed by user
+                if ((resolveInfo.activityInfo.applicationInfo.flags &
+                        ApplicationInfo.FLAG_SYSTEM) != 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     public boolean preferenceTreeClick(Preference preference) {

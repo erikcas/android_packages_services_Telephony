@@ -19,6 +19,7 @@ package com.android.services.telephony;
 import android.content.Context;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
+import android.os.Bundle;
 import android.telecom.Conference;
 import android.telecom.ConferenceParticipant;
 import android.telecom.Connection.VideoProvider;
@@ -173,8 +174,8 @@ public class ImsConference extends Conference {
 
         @Override
         public void onConnectionCapabilitiesChanged(Connection c, int connectionCapabilities) {
-            Log.d(this, "onCallCapabilitiesChanged: Connection: %s, callCapabilities: %s", c,
-                    connectionCapabilities);
+            Log.d(this, "onConnectionCapabilitiesChanged: Connection: %s," +
+                    " connectionCapabilities: %s", c, connectionCapabilities);
             int capabilites = ImsConference.this.getConnectionCapabilities();
             setConnectionCapabilities(applyHostCapabilities(capabilites, connectionCapabilities));
         }
@@ -183,6 +184,12 @@ public class ImsConference extends Conference {
         public void onStatusHintsChanged(Connection c, StatusHints statusHints) {
             Log.v(this, "onStatusHintsChanged");
             updateStatusHints();
+        }
+
+        @Override
+        public void onExtrasChanged(Connection c, Bundle extras) {
+            Log.v(this, "onExtrasChanged: c=" + c + " Extras=" + extras);
+            setExtras(extras);
         }
     };
 
@@ -258,7 +265,9 @@ public class ImsConference extends Conference {
         setConferenceHost(conferenceHost);
 
         int capabilities = Connection.CAPABILITY_SUPPORT_HOLD | Connection.CAPABILITY_HOLD |
-                Connection.CAPABILITY_MUTE | Connection.CAPABILITY_CONFERENCE_HAS_NO_CHILDREN;
+                Connection.CAPABILITY_MUTE | Connection.CAPABILITY_CONFERENCE_HAS_NO_CHILDREN |
+                Connection.CAPABILITY_ADD_PARTICIPANT;
+
         capabilities = applyHostCapabilities(capabilities,
                 mConferenceHost.getConnectionCapabilities());
         setConnectionCapabilities(capabilities);
@@ -273,37 +282,29 @@ public class ImsConference extends Conference {
      * @return The merged capabilities to be applied to the conference.
      */
     private int applyHostCapabilities(int conferenceCapabilities, int capabilities) {
-        if (can(capabilities, Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL)) {
-            conferenceCapabilities = applyCapability(conferenceCapabilities,
-                    Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
-        } else {
-            conferenceCapabilities = removeCapability(conferenceCapabilities,
-                    Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL);
-        }
+        conferenceCapabilities = changeCapability(conferenceCapabilities,
+                    Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL,
+                    can(capabilities, Connection.CAPABILITY_SUPPORTS_VT_LOCAL_BIDIRECTIONAL));
 
-        if (can(capabilities, Connection.CAPABILITY_SUPPORTS_VT_REMOTE_BIDIRECTIONAL)) {
-            conferenceCapabilities = applyCapability(conferenceCapabilities,
-                    Connection.CAPABILITY_SUPPORTS_VT_REMOTE_BIDIRECTIONAL);
-        } else {
-            conferenceCapabilities = removeCapability(conferenceCapabilities,
-                    Connection.CAPABILITY_SUPPORTS_VT_REMOTE_BIDIRECTIONAL);
-        }
+        conferenceCapabilities = changeCapability(conferenceCapabilities,
+                    Connection.CAPABILITY_SUPPORTS_VT_REMOTE_BIDIRECTIONAL,
+                    can(capabilities, Connection.CAPABILITY_SUPPORTS_VT_REMOTE_BIDIRECTIONAL));
 
-        if (can(capabilities, Connection.CAPABILITY_CAN_UPGRADE_TO_VIDEO)) {
-            conferenceCapabilities = applyCapability(conferenceCapabilities,
-                    Connection.CAPABILITY_CAN_UPGRADE_TO_VIDEO);
-        } else {
-            conferenceCapabilities = removeCapability(conferenceCapabilities,
-                    Connection.CAPABILITY_CAN_UPGRADE_TO_VIDEO);
-        }
+        conferenceCapabilities = changeCapability(conferenceCapabilities,
+                    Connection.CAPABILITY_SUPPORTS_DOWNGRADE_TO_VOICE_LOCAL,
+                    can(capabilities, Connection.CAPABILITY_SUPPORTS_DOWNGRADE_TO_VOICE_LOCAL));
 
-        if (can(capabilities, Connection.CAPABILITY_HIGH_DEF_AUDIO)) {
-            conferenceCapabilities = applyCapability(conferenceCapabilities,
-                    Connection.CAPABILITY_HIGH_DEF_AUDIO);
-        } else {
-            conferenceCapabilities = removeCapability(conferenceCapabilities,
-                    Connection.CAPABILITY_HIGH_DEF_AUDIO);
-        }
+        conferenceCapabilities = changeCapability(conferenceCapabilities,
+                    Connection.CAPABILITY_SUPPORTS_DOWNGRADE_TO_VOICE_REMOTE,
+                    can(capabilities, Connection.CAPABILITY_SUPPORTS_DOWNGRADE_TO_VOICE_REMOTE));
+
+        conferenceCapabilities = changeCapability(conferenceCapabilities,
+                    Connection.CAPABILITY_CAN_UPGRADE_TO_VIDEO,
+                    can(capabilities, Connection.CAPABILITY_CAN_UPGRADE_TO_VIDEO));
+
+        conferenceCapabilities = changeCapability(conferenceCapabilities,
+                    Connection.CAPABILITY_HIGH_DEF_AUDIO,
+                    can(capabilities, Connection.CAPABILITY_HIGH_DEF_AUDIO));
         return conferenceCapabilities;
     }
 
@@ -400,6 +401,26 @@ public class ImsConference extends Conference {
     }
 
     /**
+     * Invoked when the conference adds a participant to the conference call.
+     *
+     * @param participant The participant to be added with conference call.
+     */
+
+    @Override
+    public void onAddParticipant(String participant) {
+        try {
+            Phone phone = (mConferenceHost != null) ? mConferenceHost.getPhone() : null;
+            Log.d(this, "onAddParticipant mConferenceHost = " + mConferenceHost
+                    + " Phone = " + phone);
+            if (phone != null) {
+                phone.addParticipant(participant);
+            }
+        } catch (CallStateException e) {
+            Log.e(this, e, "Exception thrown trying to add a participant into conference");
+        }
+    }
+
+    /**
      * Invoked when the conference should be put on hold.
      */
     @Override
@@ -456,14 +477,20 @@ public class ImsConference extends Conference {
         // No-op
     }
 
-    private int applyCapability(int capabilities, int capability) {
-        int newCapabilities = capabilities | capability;
-        return newCapabilities;
-    }
-
-    private int removeCapability(int capabilities, int capability) {
-        int newCapabilities = capabilities & ~capability;
-        return newCapabilities;
+    /**
+     * Changes a capabilities bit-mask to add or remove a capability.
+     *
+     * @param capabilities The capabilities bit-mask.
+     * @param capability The capability to change.
+     * @param enabled Whether the capability should be set or removed.
+     * @return The capabilities bit-mask with the capability changed.
+     */
+    private int changeCapability(int capabilities, int capability, boolean enabled) {
+        if (enabled) {
+            return capabilities | capability;
+        } else {
+            return capabilities & ~capability;
+        }
     }
 
     /**
@@ -643,6 +670,7 @@ public class ImsConference extends Conference {
         // active call.
         ConferenceParticipantConnection connection = new ConferenceParticipantConnection(
                 parent.getOriginalConnection(), participant);
+        connection.setConnectTimeMillis(parent.getConnectTimeMillis());
         connection.addConnectionListener(mParticipantListener);
         connection.setConnectTimeMillis(parent.getConnectTimeMillis());
 
@@ -781,6 +809,8 @@ public class ImsConference extends Conference {
                     PhoneUtils.makePstnPhoneAccountHandle(mConferenceHost.getPhone());
             if (mConferenceHost.getPhone().getPhoneType() == PhoneConstants.PHONE_TYPE_GSM) {
                 GsmConnection c = new GsmConnection(originalConnection);
+                // This is a newly created conference connection as a result of SRVCC
+                c.setConferenceSupported(true);
                 c.updateState();
                 // Copy the connect time from the conferenceHost
                 c.setConnectTimeMillis(mConferenceHost.getConnectTimeMillis());

@@ -1,3 +1,4 @@
+
 /*
  * Copyright (C) 2014 The Android Open Source Project
  *
@@ -16,6 +17,10 @@
 
 package com.android.services.telephony;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Handler;
 import android.os.Message;
 
@@ -26,7 +31,9 @@ import android.telephony.PhoneNumberUtils;
 import com.android.internal.telephony.Call;
 import com.android.internal.telephony.CallStateException;
 import com.android.internal.telephony.Connection;
+import com.android.internal.telephony.imsphone.ImsPhoneConnection;
 import com.android.internal.telephony.Phone;
+import com.android.internal.telephony.TelephonyIntents;
 import com.android.phone.settings.SettingsConstants;
 
 import java.util.LinkedList;
@@ -39,6 +46,7 @@ final class CdmaConnection extends TelephonyConnection {
 
     private static final int MSG_CALL_WAITING_MISSED = 1;
     private static final int MSG_DTMF_SEND_CONFIRMATION = 2;
+    private static final int MSG_CDMA_LINE_CONTROL_INFO_REC = 3;
     private static final int TIMEOUT_CALL_WAITING_MILLIS = 20 * 1000;
 
     private final Handler mHandler = new Handler() {
@@ -53,6 +61,9 @@ final class CdmaConnection extends TelephonyConnection {
                 case MSG_DTMF_SEND_CONFIRMATION:
                     handleBurstDtmfConfirmation();
                     break;
+                case MSG_CDMA_LINE_CONTROL_INFO_REC:
+                    onCdmaLineControlInfoRec();
+                    break;
                 default:
                     break;
             }
@@ -63,7 +74,7 @@ final class CdmaConnection extends TelephonyConnection {
     /**
      * {@code True} if the CDMA connection should allow mute.
      */
-    private final boolean mAllowMute;
+    private boolean mAllowMute;
     private final boolean mIsOutgoing;
     // Queue of pending short-DTMF characters.
     private final Queue<Character> mDtmfQueue = new LinkedList<>();
@@ -72,6 +83,7 @@ final class CdmaConnection extends TelephonyConnection {
     // Indicates that the DTMF confirmation from telephony is pending.
     private boolean mDtmfBurstConfirmationPending = false;
     private boolean mIsCallWaiting;
+    private boolean mConnectionTimeReset = false;
 
     CdmaConnection(
             Connection connection,
@@ -83,9 +95,15 @@ final class CdmaConnection extends TelephonyConnection {
         mAllowMute = allowMute;
         mIsOutgoing = isOutgoing;
         mIsCallWaiting = connection != null && connection.getState() == Call.State.WAITING;
-        if (mIsCallWaiting) {
+        boolean isImsCall = getOriginalConnection() instanceof ImsPhoneConnection;
+        // Start call waiting timer for CDMA waiting call.
+        if (mIsCallWaiting && !isImsCall) {
             startCallWaitingTimer();
         }
+        // Register receiver for ECBM exit
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(TelephonyIntents.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED);
+        TelephonyGlobals.getApplicationContext().registerReceiver(mEcmExitReceiver, filter);
     }
 
     /** {@inheritDoc} */
@@ -93,6 +111,13 @@ final class CdmaConnection extends TelephonyConnection {
     public void onPlayDtmfTone(char digit) {
         if (useBurstDtmf()) {
             Log.i(this, "sending dtmf digit as burst");
+            if (getPhone() != null) {
+                // if LCH is on for this connection, that means that, this DTMF request is to
+                // play SCH tones at far end. Hence use # for playing SCH tones over CDMA.
+                if (TelephonyConnectionService.isLchActive(getPhone().getPhoneId())) {
+                    digit = '#';
+                }
+            }
             sendShortDtmfToNetwork(digit);
         } else {
             Log.i(this, "sending dtmf digit directly");
@@ -168,6 +193,22 @@ final class CdmaConnection extends TelephonyConnection {
         }
 
         super.onStateChanged(state);
+    }
+
+    @Override
+    void setOriginalConnection(com.android.internal.telephony.Connection originalConnection) {
+        super.setOriginalConnection(originalConnection);
+        getPhone().registerForLineControlInfo(mHandler, MSG_CDMA_LINE_CONTROL_INFO_REC, null);
+    }
+
+    private void onCdmaLineControlInfoRec() {
+        if (mOriginalConnection != null && mOriginalConnection.getState() == Call.State.ACTIVE) {
+            if (mOriginalConnection.getDurationMillis() > 0 &&
+                    !mOriginalConnection.isIncoming() && !mConnectionTimeReset) {
+                mConnectionTimeReset = true;
+                resetCdmaConnectionTime();
+            }
+        }
     }
 
     @Override
@@ -285,4 +326,32 @@ final class CdmaConnection extends TelephonyConnection {
                 PhoneNumberUtils.isLocalEmergencyNumber(
                     phone.getContext(), getAddress().getSchemeSpecificPart());
     }
+
+    @Override
+    void close() {
+        TelephonyGlobals.getApplicationContext().unregisterReceiver(mEcmExitReceiver);
+        super.close();
+        if (getPhone() != null) {
+            getPhone().unregisterForLineControlInfo(mHandler);
+        }
+        mConnectionTimeReset = false;
+    }
+
+    /**
+     * Listens for Emergency Callback Mode state change intents
+     */
+    private BroadcastReceiver mEcmExitReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            // Received exit Emergency Callback Mode notification and update mute state
+            if (intent.getAction().equals(
+                    TelephonyIntents.ACTION_EMERGENCY_CALLBACK_MODE_CHANGED)) {
+                Log.d(this,"Received ACTION_EMERGENCY_CALLBACK_MODE_CHANGED");
+                if ((intent.getBooleanExtra("phoneinECMState", false) == false) && !mAllowMute) {
+                    mAllowMute = true;
+                    updateConnectionCapabilities();
+                }
+            }
+        }
+    };
 }

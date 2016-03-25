@@ -27,6 +27,8 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.os.PersistableBundle;
+import android.os.ServiceManager;
+import android.os.RemoteException;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
@@ -39,6 +41,7 @@ import android.telephony.SubscriptionManager.OnSubscriptionsChangedListener;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 
+import com.android.internal.telephony.IExtTelephony;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneFactory;
 import com.android.internal.telephony.PhoneProxy;
@@ -452,26 +455,61 @@ final class TelecomAccountRegistry {
         Phone[] phones = PhoneFactory.getPhones();
         Log.d(this, "Found %d phones.  Attempting to register.", phones.length);
 
-        final boolean phoneAccountsEnabled = mContext.getResources().getBoolean(
-                R.bool.config_pstn_phone_accounts_enabled);
+        // states we are interested in from what
+        // IExtTelephony.getCurrentUiccCardProvisioningStatus()can return
+        final int PROVISIONED = 1;
+        final int INVALID_STATE = -1;
+        int primaryStackId = 0;
+        IExtTelephony mExtTelephony =
+            IExtTelephony.Stub.asInterface(ServiceManager.getService("extphone"));
 
-        if (phoneAccountsEnabled) {
-            for (Phone phone : phones) {
-                int subscriptionId = phone.getSubId();
-                Log.d(this, "Phone with subscription id %d", subscriptionId);
-                if (subscriptionId >= 0) {
-                    mAccounts.add(new AccountEntry(phone, false /* emergency */,
-                            false /* isDummy */));
+        for (Phone phone : phones) {
+            int provisionStatus = PROVISIONED;
+            int subscriptionId = phone.getSubId();
+
+            if (mTelephonyManager.getPhoneCount() > 1) {
+                SubscriptionInfo record =
+                        mSubscriptionManager.getActiveSubscriptionInfo(subscriptionId);
+
+                if (record == null) {
+                    Log.d(this, "Record not created for dummy subscription id %d", subscriptionId);
+                    continue;
                 }
+
+                int slotId = record.getSimSlotIndex();
+
+                try {
+                    //get current provision state of the SIM.
+                    provisionStatus =
+                            mExtTelephony.getCurrentUiccCardProvisioningStatus(slotId);
+                } catch (RemoteException ex) {
+                    provisionStatus = INVALID_STATE;
+                    Log.w(this, "Failed to get status for, slotId: "+ slotId +" Exception: " + ex);
+                } catch (NullPointerException ex) {
+                    provisionStatus = INVALID_STATE;
+                    Log.w(this, "Failed to get status for, slotId: "+ slotId +" Exception: " + ex);
+                }
+
+                Log.d(this, "Phone with subscription id: " + subscriptionId +
+                                " slotId: " + slotId + " provisionStatus: " + provisionStatus);
+            }
+
+            if ((subscriptionId >= 0) && (provisionStatus == PROVISIONED)){
+                mAccounts.add(new AccountEntry(phone, false /* emergency */, false /* isDummy */));
             }
         }
-
+        try {
+                //get primary stack phone id.
+                primaryStackId = mExtTelephony.getPrimaryStackPhoneId();
+            } catch (RemoteException ex) {
+                Log.w(this, "Failed to get primary stack id");
+            }
         // If we did not list ANY accounts, we need to provide a "default" SIM account
         // for emergency numbers since no actual SIM is needed for dialing emergency
         // numbers but a phone account is.
         if (mAccounts.isEmpty()) {
-            mAccounts.add(new AccountEntry(PhoneFactory.getDefaultPhone(), true /* emergency */,
-                    false /* isDummy */));
+            mAccounts.add(new AccountEntry(PhoneFactory.getPhone(primaryStackId), true
+                    /* emergency */, false /* isDummy */));
         }
 
         // Add a fake account entry.
