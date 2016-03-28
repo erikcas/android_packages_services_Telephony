@@ -510,11 +510,6 @@ public class TelephonyConnectionService extends ConnectionService {
             Log.i(this, "setPhoneAccountHandle, account = " + pHandle);
             request.setAccountHandle(pHandle);
         }
-        Bundle bundle = request.getExtras();
-        boolean isAddParticipant = (bundle != null) && bundle
-                .getBoolean(TelephonyProperties.ADD_PARTICIPANT_KEY, false);
-        Log.d(this, "placeOutgoingConnection isAddParticipant = " + isAddParticipant);
-
         com.android.internal.telephony.Connection originalConnection;
         try {
             originalConnection =

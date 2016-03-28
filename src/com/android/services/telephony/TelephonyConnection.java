@@ -16,6 +16,7 @@
 
 package com.android.services.telephony;
 
+import android.content.ComponentName;
 import android.content.Context;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
@@ -30,6 +31,7 @@ import android.telecom.PhoneAccount;
 import android.telecom.StatusHints;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
+import android.telecom.PhoneAccountHandle;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.SubscriptionManager;
 import android.telephony.PhoneNumberUtils;
@@ -903,21 +905,10 @@ abstract class TelephonyConnection extends Connection {
                         // EMERGENCY_TEMP_FAILURE & EMERGENCY_PERM_FAILURE, then redial on other sub.
                         emergencyRedial(cause, phone);
                         break;
-                    } else if (mSsNotification != null) {
-                        setDisconnected(DisconnectCauseUtil.toTelecomDisconnectCause(
-                                mOriginalConnection.getDisconnectCause(),
-                                mOriginalConnection.getVendorDisconnectCause(),
-                                mSsNotification.notificationType,
-                                mSsNotification.code));
-                        mSsNotification = null;
-                        DisconnectCauseUtil.mNotificationCode = 0xFF;
-                        DisconnectCauseUtil.mNotificationType = 0xFF;
-                    } else {
-                        setDisconnected(DisconnectCauseUtil.toTelecomDisconnectCause(
-                                mOriginalConnection.getDisconnectCause(),
-                                mOriginalConnection.getVendorDisconnectCause()));
                     }
                     resetDisconnectCause();
+                    setDisconnected(DisconnectCauseUtil.toTelecomDisconnectCause(
+                            mOriginalConnection.getDisconnectCause()));
                     close();
                     break;
                 case DISCONNECTING:
